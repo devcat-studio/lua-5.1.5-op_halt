@@ -373,6 +373,10 @@ static int pmain (lua_State *L) {
   return 0;
 }
 
+// @LUASOCKET {
+#define LUA_SOCKETNAME	"socket.core"
+LUALIB_API int (luaopen_socket_core)(lua_State *L);
+// @LUASOCKET }
 
 int main (int argc, char **argv) {
   int status;
@@ -382,6 +386,11 @@ int main (int argc, char **argv) {
     l_message(argv[0], "cannot create state: not enough memory");
     return EXIT_FAILURE;
   }
+
+  // @LUASOCKET {
+  luaopen_socket_core(L);
+  // @LUASOCKET }
+
   s.argc = argc;
   s.argv = argv;
   status = lua_cpcall(L, &pmain, &s);

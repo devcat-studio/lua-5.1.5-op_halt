@@ -380,6 +380,10 @@ void luaD_call (lua_State *L, StkId func, int nResults) {
   luaC_checkGC(L);
 }
 
+/* LUA_HALT { */
+// note: duplicated in lvm.c due to dependency tangle (below requires lopcodes.h and lobject.h)
+#define GET_REAL_INSTR(i,p) (GET_OPCODE(i) == OP_HALT ? (p->halts[GETARG_Bx(i)].orig) : (i))
+/* LUA_HALT } */
 
 static void resume (lua_State *L, void *ud) {
   StkId firstArg = cast(StkId, ud);

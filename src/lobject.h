@@ -223,6 +223,14 @@ typedef union Udata {
 } Udata;
 
 
+/* LUA_HALT { */
+typedef struct Halt {
+  Instruction orig;
+  int offset;
+  lua_Hook hook;
+  int lineNumber;
+} Halt;
+/* LUA_HALT } */
 
 
 /*
@@ -250,6 +258,12 @@ typedef struct Proto {
   lu_byte numparams;
   lu_byte is_vararg;
   lu_byte maxstacksize;
+/* LUA_HALT { */
+  Halt *halts;
+  int sizehalts;
+  struct Proto* list_prev;
+  struct Proto* list_next;
+/* LUA_HALT } */
 } Proto;
 
 

@@ -52,6 +52,7 @@ const char *const luaP_opnames[NUM_OPCODES+1] = {
   "CLOSE",
   "CLOSURE",
   "VARARG",
+  "HALT", /* LUA_HALT */
   NULL
 };
 

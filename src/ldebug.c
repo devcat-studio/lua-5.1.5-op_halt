@@ -296,6 +296,13 @@ int luaG_checkopenop (Instruction i) {
       check(GETARG_B(i) == 0);
       return 1;
     }
+/* LUA_HALT { */
+    case OP_HALT:
+      /* allow this case, assuming that if the "real" instruction
+	  is invalid for this state, it'll hit the assert at the
+	  top of the VM execution loop anyway */
+      return 1;
+/* LUA_HALT } */
     default: return 0;  /* invalid instruction after an open call */
   }
 }
@@ -636,3 +643,256 @@ void luaG_runerror (lua_State *L, const char *fmt, ...) {
   luaG_errormsg(L);
 }
 
+/* LUA_HALT { */
+static int isvalidoffset(lua_State *L, Proto *p, int offset) {
+	return offset >= 0 && offset < p->sizecode;
+}
+
+static int findhalt(lua_State *L, Proto *p, int offset) {
+	Instruction i;
+	lua_assert(isvalidoffset(L, p, offset));
+
+	i = p->code[offset];
+	if (GET_OPCODE(i) == OP_HALT) {
+		lua_assert(offset == p->halts[GETARG_Bx(i)].offset);
+		return GETARG_Bx(i);
+	}
+	else {
+		return -1;
+	}
+}
+
+static int realinstr(lua_State *L, Proto *p, int offset) {
+	int h = findhalt(L, p, offset);
+
+	if (h < 0) {
+		return p->code[offset];
+	}
+	else {
+		return p->halts[h].orig;
+	}
+}
+
+static int clearhalt(lua_State *L, Proto *p, int offset) {
+	int existing = findhalt(L, p, offset);
+	if (existing >= 0) {
+		lua_assert(p->sizehalts > existing);
+		p->code[offset] = p->halts[existing].orig;
+		if (existing != p->sizehalts - 1) {
+			p->halts[existing] = p->halts[p->sizehalts - 1];
+			p->code[p->halts[existing].offset] = CREATE_ABx(OP_HALT, 0, existing);
+		}
+
+		luaM_reallocvector(L, p->halts, p->sizehalts, p->sizehalts - 1, Halt);
+		p->sizehalts = p->sizehalts - 1;
+		return 1;
+	}
+	else {
+		return 0;
+	}
+}
+
+static int closurecovers(lua_State *L, Proto *p, int ci, int offset) {
+	Proto *cp;
+	Instruction i;
+	i = realinstr(L, p, ci);
+	lua_assert(GET_OPCODE(i) == OP_CLOSURE);
+	lua_assert(GETARG_Bx(i) < p->sizep);
+	cp = p->p[GETARG_Bx(i)]; // the proto of the closure
+
+	return offset - ci <= cp->nups; // true if offset is a pseudo of ci
+}
+
+static int avoidpseudo(lua_State *L, Proto *p, int offset) {
+	Instruction i = p->code[offset];
+	Instruction pr;
+	int ci;
+
+	if (offset > 0) {
+		pr = realinstr(L, p, offset - 1);
+
+		if (GET_OPCODE(i) == OP_JMP) {
+			// a JMP opcode following a conditional is a pseudo instruction that
+			// will never be hit and cannot be safely patched (in lvm.c, these
+			// opcode handlers look ahead and assume a JMP follows them)
+			switch (GET_OPCODE(pr)) {
+			case OP_EQ:
+			case OP_LT:
+			case OP_LE:
+			case OP_TEST:
+			case OP_TESTSET:
+			case OP_TFORLOOP:
+				return offset - 1;
+			default:
+				return offset; // bare JMP, which is fine.
+			}
+		}
+		else if (GET_OPCODE(pr) == OP_SETLIST && GETARG_C(i) == 0) {
+			// a SETLIST with a C of 0 treats the next opcode as a raw int
+			// to do very large batch settable operations, which means that
+			// "opcode" should not be patched, obviously.
+			return offset - 1;
+		}
+		else if (GET_OPCODE(i) == OP_MOVE || GET_OPCODE(i) == OP_GETUPVAL) {
+			// Scan through OP_MOVE and OP_GETUPVAL instructions for
+			// an OP_CLOSURE instruction that implies they are pseudo.
+			for (ci = offset - 1; ci >= 0; ci--) {
+				pr = realinstr(L, p, ci);
+				switch (GET_OPCODE(pr)) {
+				case OP_CLOSURE:
+					// use the offset of the closure if the intended offset is
+					// one of the pseudo instructions used to bind upvalues.
+					return closurecovers(L, p, ci, offset) ? ci : offset;
+				case OP_MOVE:
+				case OP_GETUPVAL:
+					continue;
+				case OP_HALT:
+					lua_assert(0); // realinstr above should make this impossible
+					break;
+				default:
+					return offset;
+				}
+			}
+		}
+	}
+
+	return offset;
+}
+
+static int sethalt(lua_State *L, Proto *p, int offset, int lineNumber, lua_Hook hook) {
+	int existing;
+	lua_assert(hook != NULL);
+
+	offset = avoidpseudo(L, p, offset);
+
+	existing = findhalt(L, p, offset);
+
+	if (existing < 0) {
+		luaM_reallocvector(L, p->halts, p->sizehalts, p->sizehalts + 1, Halt);
+		existing = p->sizehalts;
+		p->sizehalts = p->sizehalts + 1;
+		p->halts[existing].orig = p->code[offset];
+		p->halts[existing].offset = offset;
+		p->halts[existing].lineNumber = lineNumber;
+		p->code[offset] = CREATE_ABx(OP_HALT, 0, existing);
+	}
+	else {
+		lua_assert(p->sizehalts > existing);
+	}
+
+	p->halts[existing].hook = hook;
+
+	return offset;
+}
+
+static Proto *getproto(lua_State *L, int index) {
+	Closure * f;
+	if (!lua_isfunction(L, index) || lua_iscfunction(L, index)) {
+		return NULL;
+	}
+	else {
+		f = (Closure *)lua_topointer(L, index);
+		lua_assert(f != NULL);
+		lua_assert(!f->l.isC);
+		return f->l.p;
+	}
+}
+
+static int getoffsetforchunkname(Proto* p, const char *chunkName, int lineNumber)
+{
+	int i;
+
+	if (p == NULL || p->source == NULL)
+		return 0;
+
+	if (p->lastlinedefined != 0 && (p->linedefined > lineNumber || p->lastlinedefined < lineNumber)) {
+		return 0;
+	}
+	if (strcmp(getstr(p->source), chunkName) != 0) {
+		return 0;
+	}
+	for (i = 0; i < p->sizelineinfo; i++) {
+		if (p->lineinfo[i] == lineNumber) {
+			return i + 1;
+		}
+		if (p->lineinfo[i] > lineNumber) {
+			break;
+		}
+	}
+	return 0;
+}
+
+LUA_API int lua_setprotohalt(lua_State *L, Proto* p, const char* chunkName, int lineNumber, lua_Hook hook) {
+	int offset = getoffsetforchunkname(p, chunkName, lineNumber);
+
+	if (!offset)
+		return 0;
+
+	offset = sethalt(L, p, offset - 1, lineNumber, hook);
+	return offset + 1;
+}
+
+LUA_API int lua_sethalt(lua_State *L, const char* chunkName, int lineNumber, lua_Hook hook) {
+	Proto* p = L->l_G->proto_list;
+	while (p)
+	{
+		int offset = lua_setprotohalt(L, p, chunkName, lineNumber, hook);
+		if (offset)
+			return offset;
+		p = p->list_next;
+	}
+	return 0;
+}
+
+LUA_API void lua_clearprotohalt(lua_State *L, Proto* p, const char* chunkName) {
+	while (p->sizehalts > 0)
+	{
+		int offset = p->halts[p->sizehalts - 1].offset;
+		clearhalt(L, p, offset);
+	}
+}
+
+LUA_API void lua_clearhalt(lua_State *L, const char* chunkName) {
+	Proto* p = L->l_G->proto_list;
+	while (p)
+	{
+		lua_clearprotohalt(L, p, chunkName);
+		p = p->list_next;
+	}
+}
+
+LUA_API void lua_gethalts(lua_State *L) {
+	Proto* p = L->l_G->proto_list;
+	int i;
+	int o = 1;
+
+	lua_newtable(L);
+	while (p)
+	{
+		for (i = 0; i < p->sizehalts; i++) {
+			lua_newtable(L);
+			lua_pushstring(L, getstr(p->source));
+			lua_setfield(L, -2, "s");
+			lua_pushinteger(L, p->halts[i].lineNumber);
+			lua_setfield(L, -2, "l");
+
+			lua_rawseti(L, -2, o++);
+		}
+
+		p = p->list_next;
+	}
+}
+
+LUA_API void lua_getchunknames(lua_State *L) {
+	Proto* p = L->l_G->proto_list;
+
+	lua_newtable(L);
+	while (p)
+	{
+		lua_pushboolean(L, 1);
+		lua_setfield(L, -2, getstr(p->source));
+
+		p = p->list_next;
+	}
+}
+/* LUA_HALT } */

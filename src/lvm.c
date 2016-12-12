@@ -61,6 +61,12 @@ static void traceexec (lua_State *L, const Instruction *pc) {
   lu_byte mask = L->hookmask;
   const Instruction *oldpc = L->savedpc;
   L->savedpc = pc;
+/* LUA_HALT { */
+  if (mask & LUA_MASKHALT) {
+    luaD_callhook(L, LUA_HOOKHALT, -1);
+    return;
+  }
+/* LUA_HALT } */
   if ((mask & LUA_MASKCOUNT) && L->hookcount == 0) {
     resethookcount(L);
     luaD_callhook(L, LUA_HOOKCOUNT, -1);
@@ -373,6 +379,11 @@ static void Arith (lua_State *L, StkId ra, const TValue *rb,
       }
 
 
+/* LUA_HALT { */
+// note: duplicated in ldo.c due to dependency tangle (below requires lopcodes.h and lobject.h)
+#define GET_REAL_INSTR(i,p) (GET_OPCODE(i) == OP_HALT ? (p->halts[GETARG_Bx(i)].orig) : (i))
+/* LUA_HALT } */
+
 
 void luaV_execute (lua_State *L, int nexeccalls) {
   LClosure *cl;
@@ -387,7 +398,7 @@ void luaV_execute (lua_State *L, int nexeccalls) {
   k = cl->p->k;
   /* main loop of interpreter */
   for (;;) {
-    const Instruction i = *pc++;
+    /* LUA_HALT: const*/Instruction i = *pc++;
     StkId ra;
     if ((L->hookmask & (LUA_MASKLINE | LUA_MASKCOUNT)) &&
         (--L->hookcount == 0 || L->hookmask & LUA_MASKLINE)) {
@@ -399,6 +410,7 @@ void luaV_execute (lua_State *L, int nexeccalls) {
       base = L->base;
     }
     /* warning!! several calls may realloc the stack and invalidate `ra' */
+  resume: /* LUA_HALT */ 
     ra = RA(i);
     lua_assert(base == L->base && L->base == L->ci->base);
     lua_assert(base <= L->top && L->top <= L->stack + L->stacksize);
@@ -761,6 +773,26 @@ void luaV_execute (lua_State *L, int nexeccalls) {
         }
         continue;
       }
+/* LUA_HALT { */
+      case OP_HALT: {
+        lua_Hook old = L->hook;
+        Halt h = cl->p->halts[GETARG_Bx(i)];
+        L->hookmask |= LUA_MASKHALT;
+        L->hook = h.hook;
+        traceexec(L, pc);
+        if (L->hookmask & LUA_MASKHALT)
+          L->hookmask ^= LUA_MASKHALT;
+        if (L->hook == h.hook)
+          L->hook = old;
+        if (L->status == LUA_YIELD) {  /* did hook yield? */
+          L->savedpc = pc - 1;
+          return;
+        }
+        base = L->base;
+        i = h.orig;
+        goto resume;
+      }
+/* LUA_HALT } */
     }
   }
 }

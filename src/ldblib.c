@@ -371,6 +371,59 @@ static int db_errorfb (lua_State *L) {
   return 1;
 }
 
+/* LUA_HALT { */
+static void haltf(lua_State *L, lua_Debug *ar) {
+	int oldTop = lua_gettop(L);
+	lua_getglobal(L, "__halt__");
+	if (lua_isfunction(L, -1))
+	{
+		lua_call(L, 0, 0);
+		lua_settop(L, oldTop);
+	}
+	else
+	{
+		lua_settop(L, oldTop);
+		luaL_error(L, "halt handler not found: _G.__halt__");
+	}
+}
+
+static int db_sethalt(lua_State *L) {
+	int lineNumber = luaL_checkint(L, 2);
+	int offset;
+	const char* chunkName;
+	luaL_checktype(L, 1, LUA_TSTRING);
+	chunkName = lua_tostring(L, 1);
+
+	offset = lua_sethalt(L, chunkName, lineNumber, haltf);
+	if (offset > 0) {
+		lua_pushinteger(L, offset);
+	}
+	else {
+		lua_pushnil(L);
+	}
+
+	return 1;
+}
+
+static int db_clearhalt(lua_State *L) {
+	const char* chunkName;
+	luaL_checktype(L, 1, LUA_TSTRING);
+	chunkName = lua_tostring(L, 1);
+
+	lua_clearhalt(L, chunkName);
+	return 0;
+}
+
+static int db_gethalts(lua_State *L) {
+	lua_gethalts(L);
+	return 1;
+}
+
+static int db_getchunknames(lua_State* L) {
+	lua_getchunknames(L);
+	return 1;
+}
+/* LUA_HALT } */
 
 static const luaL_Reg dblib[] = {
   {"debug", db_debug},
@@ -387,6 +440,12 @@ static const luaL_Reg dblib[] = {
   {"setmetatable", db_setmetatable},
   {"setupvalue", db_setupvalue},
   {"traceback", db_errorfb},
+/* LUA_HALT { */
+  {"sethalt", db_sethalt},
+  {"clearhalt", db_clearhalt},
+  {"gethalts", db_gethalts},
+  {"getchunknames", db_getchunknames},
+/* LUA_HALT } */
   {NULL, NULL}
 };
 

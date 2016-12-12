@@ -205,10 +205,17 @@ OP_CLOSE,/*	A 	close all variables in the stack up to (>=) R(A)*/
 OP_CLOSURE,/*	A Bx	R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))	*/
 
 OP_VARARG/*	A B	R(A), R(A+1), ..., R(A+B-1) = vararg		*/
+
+/* LUA_HALT { */
+, OP_HALT/*	A Bx    halt and resume using breakpoint Bx			*/
+/* LUA_HALT } */
 } OpCode;
 
 
-#define NUM_OPCODES	(cast(int, OP_VARARG) + 1)
+/* LUA_HALT { */
+/*#define NUM_OPCODES	(cast(int, OP_VARARG) + 1)*/
+#define NUM_OPCODES	(cast(int, OP_HALT) + 1)
+/* LUA_HALT } */
 
 
 

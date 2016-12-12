@@ -309,6 +309,7 @@ static l_mem propagatemark (global_State *g) {
       g->gray = p->gclist;
       traverseproto(g, p);
       return sizeof(Proto) + sizeof(Instruction) * p->sizecode +
+                             sizeof(Halt) * p->sizehalts + /* LUA_HALT */
                              sizeof(Proto *) * p->sizep +
                              sizeof(TValue) * p->sizek + 
                              sizeof(int) * p->sizelineinfo +

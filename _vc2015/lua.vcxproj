@@ -50,6 +50,19 @@
     <ClCompile Include="..\src\lvm.c" />
     <ClCompile Include="..\src\lzio.c" />
     <ClCompile Include="..\src\print.c" />
+    <ClCompile Include="..\_luasocket\auxiliar.c" />
+    <ClCompile Include="..\_luasocket\buffer.c" />
+    <ClCompile Include="..\_luasocket\except.c" />
+    <ClCompile Include="..\_luasocket\inet.c" />
+    <ClCompile Include="..\_luasocket\io.c" />
+    <ClCompile Include="..\_luasocket\luasocket.c" />
+    <ClCompile Include="..\_luasocket\mime.c" />
+    <ClCompile Include="..\_luasocket\options.c" />
+    <ClCompile Include="..\_luasocket\select.c" />
+    <ClCompile Include="..\_luasocket\tcp.c" />
+    <ClCompile Include="..\_luasocket\timeout.c" />
+    <ClCompile Include="..\_luasocket\udp.c" />
+    <ClCompile Include="..\_luasocket\wsocket.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\lapi.h" />
@@ -75,6 +88,20 @@
     <ClInclude Include="..\src\lundump.h" />
     <ClInclude Include="..\src\lvm.h" />
     <ClInclude Include="..\src\lzio.h" />
+    <ClInclude Include="..\_luasocket\auxiliar.h" />
+    <ClInclude Include="..\_luasocket\buffer.h" />
+    <ClInclude Include="..\_luasocket\except.h" />
+    <ClInclude Include="..\_luasocket\inet.h" />
+    <ClInclude Include="..\_luasocket\io.h" />
+    <ClInclude Include="..\_luasocket\luasocket.h" />
+    <ClInclude Include="..\_luasocket\mime.h" />
+    <ClInclude Include="..\_luasocket\options.h" />
+    <ClInclude Include="..\_luasocket\select.h" />
+    <ClInclude Include="..\_luasocket\socket.h" />
+    <ClInclude Include="..\_luasocket\tcp.h" />
+    <ClInclude Include="..\_luasocket\timeout.h" />
+    <ClInclude Include="..\_luasocket\udp.h" />
+    <ClInclude Include="..\_luasocket\wsocket.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\src\Makefile" />
@@ -149,7 +176,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\src\;</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

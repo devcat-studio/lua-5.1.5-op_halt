@@ -32,6 +32,45 @@
     <ClCompile Include="..\src\lvm.c" />
     <ClCompile Include="..\src\lzio.c" />
     <ClCompile Include="..\src\print.c" />
+    <ClCompile Include="..\_luasocket\auxiliar.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\buffer.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\except.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\inet.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\io.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\luasocket.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\mime.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\options.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\select.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\tcp.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\timeout.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\udp.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
+    <ClCompile Include="..\_luasocket\wsocket.c">
+      <Filter>_luasocket</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\lapi.h" />
@@ -57,8 +96,55 @@
     <ClInclude Include="..\src\lundump.h" />
     <ClInclude Include="..\src\lvm.h" />
     <ClInclude Include="..\src\lzio.h" />
+    <ClInclude Include="..\_luasocket\auxiliar.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\buffer.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\except.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\inet.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\io.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\luasocket.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\mime.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\options.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\select.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\socket.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\tcp.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\timeout.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\udp.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
+    <ClInclude Include="..\_luasocket\wsocket.h">
+      <Filter>_luasocket</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\src\Makefile" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="_luasocket">
+      <UniqueIdentifier>{32f39166-e437-4858-92f8-7b912ac99f7e}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
 </Project>

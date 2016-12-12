@@ -1,0 +1,725 @@
+diff --git a/src/ldblib.c b/src/ldblib.c
+index 2027eda..934aae8 100644
+--- a/src/ldblib.c
++++ b/src/ldblib.c
+@@ -371,6 +371,59 @@ static int db_errorfb (lua_State *L) {
+   return 1;
+ }
+ 
++/* LUA_HALT { */
++static void haltf(lua_State *L, lua_Debug *ar) {
++	int oldTop = lua_gettop(L);
++	lua_getglobal(L, "__halt__");
++	if (lua_isfunction(L, -1))
++	{
++		lua_call(L, 0, 0);
++		lua_settop(L, oldTop);
++	}
++	else
++	{
++		lua_settop(L, oldTop);
++		luaL_error(L, "halt handler not found: _G.__halt__");
++	}
++}
++
++static int db_sethalt(lua_State *L) {
++	int lineNumber = luaL_checkint(L, 2);
++	int offset;
++	const char* chunkName;
++	luaL_checktype(L, 1, LUA_TSTRING);
++	chunkName = lua_tostring(L, 1);
++
++	offset = lua_sethalt(L, chunkName, lineNumber, haltf);
++	if (offset > 0) {
++		lua_pushinteger(L, offset);
++	}
++	else {
++		lua_pushnil(L);
++	}
++
++	return 1;
++}
++
++static int db_clearhalt(lua_State *L) {
++	const char* chunkName;
++	luaL_checktype(L, 1, LUA_TSTRING);
++	chunkName = lua_tostring(L, 1);
++
++	lua_clearhalt(L, chunkName);
++	return 0;
++}
++
++static int db_gethalts(lua_State *L) {
++	lua_gethalts(L);
++	return 1;
++}
++
++static int db_getchunknames(lua_State* L) {
++	lua_getchunknames(L);
++	return 1;
++}
++/* LUA_HALT } */
+ 
+ static const luaL_Reg dblib[] = {
+   {"debug", db_debug},
+@@ -387,6 +440,12 @@ static const luaL_Reg dblib[] = {
+   {"setmetatable", db_setmetatable},
+   {"setupvalue", db_setupvalue},
+   {"traceback", db_errorfb},
++/* LUA_HALT { */
++  {"sethalt", db_sethalt},
++  {"clearhalt", db_clearhalt},
++  {"gethalts", db_gethalts},
++  {"getchunknames", db_getchunknames},
++/* LUA_HALT } */
+   {NULL, NULL}
+ };
+ 
+diff --git a/src/ldebug.c b/src/ldebug.c
+index 50ad3d3..f2ad0b6 100644
+--- a/src/ldebug.c
++++ b/src/ldebug.c
+@@ -296,6 +296,13 @@ int luaG_checkopenop (Instruction i) {
+       check(GETARG_B(i) == 0);
+       return 1;
+     }
++/* LUA_HALT { */
++    case OP_HALT:
++      /* allow this case, assuming that if the "real" instruction
++	  is invalid for this state, it'll hit the assert at the
++	  top of the VM execution loop anyway */
++      return 1;
++/* LUA_HALT } */
+     default: return 0;  /* invalid instruction after an open call */
+   }
+ }
+@@ -636,3 +643,256 @@ void luaG_runerror (lua_State *L, const char *fmt, ...) {
+   luaG_errormsg(L);
+ }
+ 
++/* LUA_HALT { */
++static int isvalidoffset(lua_State *L, Proto *p, int offset) {
++	return offset >= 0 && offset < p->sizecode;
++}
++
++static int findhalt(lua_State *L, Proto *p, int offset) {
++	Instruction i;
++	lua_assert(isvalidoffset(L, p, offset));
++
++	i = p->code[offset];
++	if (GET_OPCODE(i) == OP_HALT) {
++		lua_assert(offset == p->halts[GETARG_Bx(i)].offset);
++		return GETARG_Bx(i);
++	}
++	else {
++		return -1;
++	}
++}
++
++static int realinstr(lua_State *L, Proto *p, int offset) {
++	int h = findhalt(L, p, offset);
++
++	if (h < 0) {
++		return p->code[offset];
++	}
++	else {
++		return p->halts[h].orig;
++	}
++}
++
++static int clearhalt(lua_State *L, Proto *p, int offset) {
++	int existing = findhalt(L, p, offset);
++	if (existing >= 0) {
++		lua_assert(p->sizehalts > existing);
++		p->code[offset] = p->halts[existing].orig;
++		if (existing != p->sizehalts - 1) {
++			p->halts[existing] = p->halts[p->sizehalts - 1];
++			p->code[p->halts[existing].offset] = CREATE_ABx(OP_HALT, 0, existing);
++		}
++
++		luaM_reallocvector(L, p->halts, p->sizehalts, p->sizehalts - 1, Halt);
++		p->sizehalts = p->sizehalts - 1;
++		return 1;
++	}
++	else {
++		return 0;
++	}
++}
++
++static int closurecovers(lua_State *L, Proto *p, int ci, int offset) {
++	Proto *cp;
++	Instruction i;
++	i = realinstr(L, p, ci);
++	lua_assert(GET_OPCODE(i) == OP_CLOSURE);
++	lua_assert(GETARG_Bx(i) < p->sizep);
++	cp = p->p[GETARG_Bx(i)]; // the proto of the closure
++
++	return offset - ci <= cp->nups; // true if offset is a pseudo of ci
++}
++
++static int avoidpseudo(lua_State *L, Proto *p, int offset) {
++	Instruction i = p->code[offset];
++	Instruction pr;
++	int ci;
++
++	if (offset > 0) {
++		pr = realinstr(L, p, offset - 1);
++
++		if (GET_OPCODE(i) == OP_JMP) {
++			// a JMP opcode following a conditional is a pseudo instruction that
++			// will never be hit and cannot be safely patched (in lvm.c, these
++			// opcode handlers look ahead and assume a JMP follows them)
++			switch (GET_OPCODE(pr)) {
++			case OP_EQ:
++			case OP_LT:
++			case OP_LE:
++			case OP_TEST:
++			case OP_TESTSET:
++			case OP_TFORLOOP:
++				return offset - 1;
++			default:
++				return offset; // bare JMP, which is fine.
++			}
++		}
++		else if (GET_OPCODE(pr) == OP_SETLIST && GETARG_C(i) == 0) {
++			// a SETLIST with a C of 0 treats the next opcode as a raw int
++			// to do very large batch settable operations, which means that
++			// "opcode" should not be patched, obviously.
++			return offset - 1;
++		}
++		else if (GET_OPCODE(i) == OP_MOVE || GET_OPCODE(i) == OP_GETUPVAL) {
++			// Scan through OP_MOVE and OP_GETUPVAL instructions for
++			// an OP_CLOSURE instruction that implies they are pseudo.
++			for (ci = offset - 1; ci >= 0; ci--) {
++				pr = realinstr(L, p, ci);
++				switch (GET_OPCODE(pr)) {
++				case OP_CLOSURE:
++					// use the offset of the closure if the intended offset is
++					// one of the pseudo instructions used to bind upvalues.
++					return closurecovers(L, p, ci, offset) ? ci : offset;
++				case OP_MOVE:
++				case OP_GETUPVAL:
++					continue;
++				case OP_HALT:
++					lua_assert(0); // realinstr above should make this impossible
++					break;
++				default:
++					return offset;
++				}
++			}
++		}
++	}
++
++	return offset;
++}
++
++static int sethalt(lua_State *L, Proto *p, int offset, int lineNumber, lua_Hook hook) {
++	int existing;
++	lua_assert(hook != NULL);
++
++	offset = avoidpseudo(L, p, offset);
++
++	existing = findhalt(L, p, offset);
++
++	if (existing < 0) {
++		luaM_reallocvector(L, p->halts, p->sizehalts, p->sizehalts + 1, Halt);
++		existing = p->sizehalts;
++		p->sizehalts = p->sizehalts + 1;
++		p->halts[existing].orig = p->code[offset];
++		p->halts[existing].offset = offset;
++		p->halts[existing].lineNumber = lineNumber;
++		p->code[offset] = CREATE_ABx(OP_HALT, 0, existing);
++	}
++	else {
++		lua_assert(p->sizehalts > existing);
++	}
++
++	p->halts[existing].hook = hook;
++
++	return offset;
++}
++
++static Proto *getproto(lua_State *L, int index) {
++	Closure * f;
++	if (!lua_isfunction(L, index) || lua_iscfunction(L, index)) {
++		return NULL;
++	}
++	else {
++		f = (Closure *)lua_topointer(L, index);
++		lua_assert(f != NULL);
++		lua_assert(!f->l.isC);
++		return f->l.p;
++	}
++}
++
++static int getoffsetforchunkname(Proto* p, const char *chunkName, int lineNumber)
++{
++	int i;
++
++	if (p == NULL || p->source == NULL)
++		return 0;
++
++	if (p->lastlinedefined != 0 && (p->linedefined > lineNumber || p->lastlinedefined < lineNumber)) {
++		return 0;
++	}
++	if (strcmp(getstr(p->source), chunkName) != 0) {
++		return 0;
++	}
++	for (i = 0; i < p->sizelineinfo; i++) {
++		if (p->lineinfo[i] == lineNumber) {
++			return i + 1;
++		}
++		if (p->lineinfo[i] > lineNumber) {
++			break;
++		}
++	}
++	return 0;
++}
++
++LUA_API int lua_setprotohalt(lua_State *L, Proto* p, const char* chunkName, int lineNumber, lua_Hook hook) {
++	int offset = getoffsetforchunkname(p, chunkName, lineNumber);
++
++	if (!offset)
++		return 0;
++
++	offset = sethalt(L, p, offset - 1, lineNumber, hook);
++	return offset + 1;
++}
++
++LUA_API int lua_sethalt(lua_State *L, const char* chunkName, int lineNumber, lua_Hook hook) {
++	Proto* p = L->l_G->proto_list;
++	while (p)
++	{
++		int offset = lua_setprotohalt(L, p, chunkName, lineNumber, hook);
++		if (offset)
++			return offset;
++		p = p->list_next;
++	}
++	return 0;
++}
++
++LUA_API void lua_clearprotohalt(lua_State *L, Proto* p, const char* chunkName) {
++	while (p->sizehalts > 0)
++	{
++		int offset = p->halts[p->sizehalts - 1].offset;
++		clearhalt(L, p, offset);
++	}
++}
++
++LUA_API void lua_clearhalt(lua_State *L, const char* chunkName) {
++	Proto* p = L->l_G->proto_list;
++	while (p)
++	{
++		lua_clearprotohalt(L, p, chunkName);
++		p = p->list_next;
++	}
++}
++
++LUA_API void lua_gethalts(lua_State *L) {
++	Proto* p = L->l_G->proto_list;
++	int i;
++	int o = 1;
++
++	lua_newtable(L);
++	while (p)
++	{
++		for (i = 0; i < p->sizehalts; i++) {
++			lua_newtable(L);
++			lua_pushstring(L, getstr(p->source));
++			lua_setfield(L, -2, "s");
++			lua_pushinteger(L, p->halts[i].lineNumber);
++			lua_setfield(L, -2, "l");
++
++			lua_rawseti(L, -2, o++);
++		}
++
++		p = p->list_next;
++	}
++}
++
++LUA_API void lua_getchunknames(lua_State *L) {
++	Proto* p = L->l_G->proto_list;
++
++	lua_newtable(L);
++	while (p)
++	{
++		lua_pushboolean(L, 1);
++		lua_setfield(L, -2, getstr(p->source));
++
++		p = p->list_next;
++	}
++}
++/* LUA_HALT } */
+diff --git a/src/ldo.c b/src/ldo.c
+index d1bf786..60316f2 100644
+--- a/src/ldo.c
++++ b/src/ldo.c
+@@ -380,6 +380,10 @@ void luaD_call (lua_State *L, StkId func, int nResults) {
+   luaC_checkGC(L);
+ }
+ 
++/* LUA_HALT { */
++// note: duplicated in lvm.c due to dependency tangle (below requires lopcodes.h and lobject.h)
++#define GET_REAL_INSTR(i,p) (GET_OPCODE(i) == OP_HALT ? (p->halts[GETARG_Bx(i)].orig) : (i))
++/* LUA_HALT } */
+ 
+ static void resume (lua_State *L, void *ud) {
+   StkId firstArg = cast(StkId, ud);
+diff --git a/src/ldump.c b/src/ldump.c
+index c9d3d48..008ed57 100644
+--- a/src/ldump.c
++++ b/src/ldump.c
+@@ -75,6 +75,52 @@ static void DumpString(const TString* s, DumpState* D)
+ 
+ #define DumpCode(f,D)	 DumpVector(f->code,f->sizecode,sizeof(Instruction),D)
+ 
++/* LUA_HALT { */
++static int nexthalt(Halt *halts, int sizehalts, int offset) {
++	int i, ho, nho, nhi; // index, tmp offset, next halt offset, next halt index
++	nho = -1;
++	nhi = -1;
++	for (i = 0; nho != offset && i < sizehalts; i++) {
++		ho = halts[i].offset;
++		if (ho >= offset && (nho == -1 || ho < nho)) {
++			nho = ho;
++			nhi = i;
++		}
++	}
++
++	lua_assert(nho == -1 || nho >= offset);
++	return nhi; // returns the index of the halt (not the offset)
++}
++
++static void DumpCodePatchingHalts(const Proto* f, DumpState* D) {
++	int ci, hi, ho; // codeindex, haltindex, haltoffset
++	DumpInt(f->sizecode, D);
++
++	ci = 0;
++	while (ci < f->sizecode) {
++		// note that the halts array is not sorted, so this routine is n^2 with
++		// the number of breakpoints in the function, betting that will be small
++		// compared to the number of instructions. if the number of breakpoints
++		// were large, it might be worth the complexity to sort it
++		hi = nexthalt(f->halts, f->sizehalts, ci);
++		ho = f->halts[hi].offset;
++		if (ho > ci) {
++			DumpMem(f->code + ci, ho - ci, sizeof(Instruction), D);
++			ci = ho;
++		}
++		if (ho == ci) {
++			DumpVar(f->halts[hi].orig, D);
++			ci++;
++		}
++		else {
++			lua_assert(hi == -1);
++			DumpMem(f->code + ci, f->sizecode - ci, sizeof(Instruction), D);
++			ci = f->sizecode;
++		}
++	}
++}
++/* LUA_HALT } */
++
+ static void DumpFunction(const Proto* f, const TString* p, DumpState* D);
+ 
+ static void DumpConstants(const Proto* f, DumpState* D)
+@@ -136,6 +182,15 @@ static void DumpFunction(const Proto* f, const TString* p, DumpState* D)
+  DumpChar(f->is_vararg,D);
+  DumpChar(f->maxstacksize,D);
+  DumpCode(f,D);
++/* LUA_HALT { */
++ // DumpCode(f, D);
++ if (f->sizehalts == 0) {
++  DumpCode(f, D);
++ }
++ else {
++  DumpCodePatchingHalts(f, D);
++ }
++/* LUA_HALT } */
+  DumpConstants(f,D);
+  DumpDebug(f,D);
+ }
+diff --git a/src/lfunc.c b/src/lfunc.c
+index 813e88f..eed88ad 100644
+--- a/src/lfunc.c
++++ b/src/lfunc.c
+@@ -111,6 +111,30 @@ void luaF_close (lua_State *L, StkId level) {
+   }
+ }
+ 
++/* LUA_HALT { */
++/*
++#include <assert.h>
++void check_protolist(global_State* g, Proto* p)
++{
++	if (p == NULL) return;
++
++	if (p->list_prev == NULL) {
++		assert(g->proto_list == p);
++	}
++	else {
++		assert(p->list_prev->list_next == p);
++	}
++
++	if (p->list_next == NULL)	{
++		// OK
++	}
++	else {
++		assert(p->list_next->list_prev == p);
++		check_protolist(g, p->list_next);
++	}
++}
++*/
++/* LUA_HALT } */
+ 
+ Proto *luaF_newproto (lua_State *L) {
+   Proto *f = luaM_new(L, Proto);
+@@ -134,11 +158,37 @@ Proto *luaF_newproto (lua_State *L) {
+   f->linedefined = 0;
+   f->lastlinedefined = 0;
+   f->source = NULL;
++/* LUA_HALT { */
++  f->halts = NULL;
++  f->sizehalts = 0;
++  f->list_prev = NULL;
++  f->list_next = L->l_G->proto_list;
++  L->l_G->proto_list = f;
++  if (f->list_next != NULL)
++  {
++	  f->list_next->list_prev = f;
++  }
++  //check_protolist(L->l_G, L->l_G->proto_list);
++/* LUA_HALT } */
+   return f;
+ }
+ 
+ 
+ void luaF_freeproto (lua_State *L, Proto *f) {
++/* LUA_HALT { */
++  //check_protolist(L->l_G, f);
++  if (f->list_prev) {
++    f->list_prev->list_next = f->list_next;
++  }
++  else {
++    L->l_G->proto_list = f->list_next;
++  }
++  if (f->list_next) {
++    f->list_next->list_prev = f->list_prev;
++  }
++  //check_protolist(L->l_G, L->l_G->proto_list);
++  luaM_freearray(L, f->halts, f->sizehalts, Halt);
++/* LUA_HALT } */
+   luaM_freearray(L, f->code, f->sizecode, Instruction);
+   luaM_freearray(L, f->p, f->sizep, Proto *);
+   luaM_freearray(L, f->k, f->sizek, TValue);
+diff --git a/src/lgc.c b/src/lgc.c
+index e909c79..94965f7 100644
+--- a/src/lgc.c
++++ b/src/lgc.c
+@@ -309,6 +309,7 @@ static l_mem propagatemark (global_State *g) {
+       g->gray = p->gclist;
+       traverseproto(g, p);
+       return sizeof(Proto) + sizeof(Instruction) * p->sizecode +
++                             sizeof(Halt) * p->sizehalts + /* LUA_HALT */
+                              sizeof(Proto *) * p->sizep +
+                              sizeof(TValue) * p->sizek + 
+                              sizeof(int) * p->sizelineinfo +
+diff --git a/src/lobject.h b/src/lobject.h
+index f1e447e..897d371 100644
+--- a/src/lobject.h
++++ b/src/lobject.h
+@@ -223,6 +223,14 @@ typedef union Udata {
+ } Udata;
+ 
+ 
++/* LUA_HALT { */
++typedef struct Halt {
++  Instruction orig;
++  int offset;
++  lua_Hook hook;
++  int lineNumber;
++} Halt;
++/* LUA_HALT } */
+ 
+ 
+ /*
+@@ -250,6 +258,12 @@ typedef struct Proto {
+   lu_byte numparams;
+   lu_byte is_vararg;
+   lu_byte maxstacksize;
++/* LUA_HALT { */
++  Halt *halts;
++  int sizehalts;
++  struct Proto* list_prev;
++  struct Proto* list_next;
++/* LUA_HALT } */
+ } Proto;
+ 
+ 
+diff --git a/src/lopcodes.c b/src/lopcodes.c
+index 4cc7452..8fc0431 100644
+--- a/src/lopcodes.c
++++ b/src/lopcodes.c
+@@ -52,6 +52,7 @@ const char *const luaP_opnames[NUM_OPCODES+1] = {
+   "CLOSE",
+   "CLOSURE",
+   "VARARG",
++  "HALT", /* LUA_HALT */
+   NULL
+ };
+ 
+diff --git a/src/lopcodes.h b/src/lopcodes.h
+index 41224d6..9deafff 100644
+--- a/src/lopcodes.h
++++ b/src/lopcodes.h
+@@ -205,10 +205,17 @@ OP_CLOSE,/*	A 	close all variables in the stack up to (>=) R(A)*/
+ OP_CLOSURE,/*	A Bx	R(A) := closure(KPROTO[Bx], R(A), ... ,R(A+n))	*/
+ 
+ OP_VARARG/*	A B	R(A), R(A+1), ..., R(A+B-1) = vararg		*/
++
++/* LUA_HALT { */
++, OP_HALT/*	A Bx    halt and resume using breakpoint Bx			*/
++/* LUA_HALT } */
+ } OpCode;
+ 
+ 
+-#define NUM_OPCODES	(cast(int, OP_VARARG) + 1)
++/* LUA_HALT { */
++/*#define NUM_OPCODES	(cast(int, OP_VARARG) + 1)*/
++#define NUM_OPCODES	(cast(int, OP_HALT) + 1)
++/* LUA_HALT } */
+ 
+ 
+ 
+diff --git a/src/lstate.c b/src/lstate.c
+index 4313b83..578b0ff 100644
+--- a/src/lstate.c
++++ b/src/lstate.c
+@@ -178,6 +178,7 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud) {
+   g->gcpause = LUAI_GCPAUSE;
+   g->gcstepmul = LUAI_GCMUL;
+   g->gcdept = 0;
++  g->proto_list = NULL; /* LUA_HALT */
+   for (i=0; i<NUM_TAGS; i++) g->mt[i] = NULL;
+   if (luaD_rawrunprotected(L, f_luaopen, NULL) != 0) {
+     /* memory allocation error: free partial state */
+diff --git a/src/lstate.h b/src/lstate.h
+index 3bc575b..d5956e3 100644
+--- a/src/lstate.h
++++ b/src/lstate.h
+@@ -91,6 +91,7 @@ typedef struct global_State {
+   UpVal uvhead;  /* head of double-linked list of all open upvalues */
+   struct Table *mt[NUM_TAGS];  /* metatables for basic types */
+   TString *tmname[TM_N];  /* array with tag-method names */
++  Proto* proto_list; /* LUA_HALT */
+ } global_State;
+ 
+ 
+diff --git a/src/lua.h b/src/lua.h
+index a4b73e7..b5802db 100644
+--- a/src/lua.h
++++ b/src/lua.h
+@@ -313,7 +313,7 @@ LUA_API void lua_setlevel	(lua_State *from, lua_State *to);
+ #define LUA_HOOKLINE	2
+ #define LUA_HOOKCOUNT	3
+ #define LUA_HOOKTAILRET 4
+-
++#define LUA_HOOKHALT  5 /* LUA_HALT */
+ 
+ /*
+ ** Event masks
+@@ -322,7 +322,7 @@ LUA_API void lua_setlevel	(lua_State *from, lua_State *to);
+ #define LUA_MASKRET	(1 << LUA_HOOKRET)
+ #define LUA_MASKLINE	(1 << LUA_HOOKLINE)
+ #define LUA_MASKCOUNT	(1 << LUA_HOOKCOUNT)
+-
++#define LUA_MASKHALT (1 << LUA_HOOKHALT) /* LUA_HALT */
+ typedef struct lua_Debug lua_Debug;  /* activation record */
+ 
+ 
+@@ -341,7 +341,12 @@ LUA_API int lua_sethook (lua_State *L, lua_Hook func, int mask, int count);
+ LUA_API lua_Hook lua_gethook (lua_State *L);
+ LUA_API int lua_gethookmask (lua_State *L);
+ LUA_API int lua_gethookcount (lua_State *L);
+-
++/* LUA_HALT { */
++LUA_API int lua_sethalt(lua_State *L, const char* chunkName, int lineNumber, lua_Hook hook);
++LUA_API void lua_clearhalt(lua_State *L, const char* chunkName);
++LUA_API void lua_gethalts(lua_State *L);
++LUA_API void lua_getchunknames(lua_State *L);
++/* LUA_HALT } */
+ 
+ struct lua_Debug {
+   int event;
+diff --git a/src/lvm.c b/src/lvm.c
+index e0a0cd8..1d8e81c 100644
+--- a/src/lvm.c
++++ b/src/lvm.c
+@@ -61,6 +61,12 @@ static void traceexec (lua_State *L, const Instruction *pc) {
+   lu_byte mask = L->hookmask;
+   const Instruction *oldpc = L->savedpc;
+   L->savedpc = pc;
++/* LUA_HALT { */
++  if (mask & LUA_MASKHALT) {
++    luaD_callhook(L, LUA_HOOKHALT, -1);
++    return;
++  }
++/* LUA_HALT } */
+   if ((mask & LUA_MASKCOUNT) && L->hookcount == 0) {
+     resethookcount(L);
+     luaD_callhook(L, LUA_HOOKCOUNT, -1);
+@@ -373,6 +379,11 @@ static void Arith (lua_State *L, StkId ra, const TValue *rb,
+       }
+ 
+ 
++/* LUA_HALT { */
++// note: duplicated in ldo.c due to dependency tangle (below requires lopcodes.h and lobject.h)
++#define GET_REAL_INSTR(i,p) (GET_OPCODE(i) == OP_HALT ? (p->halts[GETARG_Bx(i)].orig) : (i))
++/* LUA_HALT } */
++
+ 
+ void luaV_execute (lua_State *L, int nexeccalls) {
+   LClosure *cl;
+@@ -387,7 +398,7 @@ void luaV_execute (lua_State *L, int nexeccalls) {
+   k = cl->p->k;
+   /* main loop of interpreter */
+   for (;;) {
+-    const Instruction i = *pc++;
++    /* LUA_HALT: const*/Instruction i = *pc++;
+     StkId ra;
+     if ((L->hookmask & (LUA_MASKLINE | LUA_MASKCOUNT)) &&
+         (--L->hookcount == 0 || L->hookmask & LUA_MASKLINE)) {
+@@ -399,6 +410,7 @@ void luaV_execute (lua_State *L, int nexeccalls) {
+       base = L->base;
+     }
+     /* warning!! several calls may realloc the stack and invalidate `ra' */
++  resume: /* LUA_HALT */ 
+     ra = RA(i);
+     lua_assert(base == L->base && L->base == L->ci->base);
+     lua_assert(base <= L->top && L->top <= L->stack + L->stacksize);
+@@ -761,6 +773,26 @@ void luaV_execute (lua_State *L, int nexeccalls) {
+         }
+         continue;
+       }
++/* LUA_HALT { */
++      case OP_HALT: {
++        lua_Hook old = L->hook;
++        Halt h = cl->p->halts[GETARG_Bx(i)];
++        L->hookmask |= LUA_MASKHALT;
++        L->hook = h.hook;
++        traceexec(L, pc);
++        if (L->hookmask & LUA_MASKHALT)
++          L->hookmask ^= LUA_MASKHALT;
++        if (L->hook == h.hook)
++          L->hook = old;
++        if (L->status == LUA_YIELD) {  /* did hook yield? */
++          L->savedpc = pc - 1;
++          return;
++        }
++        base = L->base;
++        i = h.orig;
++        goto resume;
++      }
++/* LUA_HALT } */
+     }
+   }
+ }
